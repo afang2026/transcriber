@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lecture Transcriber</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Literata:opsz,wght@7..72,400;7..72,600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F1F3F6;
+    --ink: #1A2434;
+    --muted: #667386;
+    --rule: #D3D9E2;
+    --marker: #FFE14D;
+    --marker-soft: #FFF4B8;
+    --marker-edge: #E3B800;
+    --rec: #D92D3F;
+    --focus: #2447D6;
+    --serif: "Literata", Georgia, "Times New Roman", serif;
+    --sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  button, select, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* ---------- sticky control bar ---------- */
+  .bar {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--paper);
+    border-bottom: 1px solid var(--rule);
+  }
+  .bar-inner {
+    max-width: 780px; margin: 0 auto;
+    padding: 12px 20px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  }
+  .rec-btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: var(--ink); color: #fff;
+    border: 0; border-radius: 999px;
+    padding: 10px 20px 10px 16px;
+    font-weight: 600; cursor: pointer;
+    min-width: 150px; justify-content: center;
+  }
+  .rec-btn:hover { background: #0F1724; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--rec); flex: none; }
+  .rec-btn.live { background: var(--rec); }
+  .rec-btn.live:hover { background: #BE2132; }
+  .rec-btn.live .dot { background: #fff; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  .clock { font-variant-numeric: tabular-nums; font-weight: 500; font-size: 20px; letter-spacing: .01em; }
+  .status { color: var(--muted); font-size: 14px; flex: 1 1 160px; min-width: 0; }
+  .status.err { color: var(--rec); }
+
+  .actions { display: flex; gap: 8px; margin-left: auto; }
+  .btn {
+    background: transparent; border: 1px solid var(--rule); border-radius: 8px;
+    padding: 7px 13px; cursor: pointer; font-weight: 500;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.mark { background: var(--marker); border-color: var(--marker-edge); }
+  .btn.mark:hover { background: #FFD91A; }
+  .btn.danger-armed { background: var(--rec); border-color: var(--rec); color: #fff; }
+
+  /* ---------- page ---------- */
+  main { max-width: 780px; margin: 0 auto; padding: 28px 20px 45vh; }
+  .title {
+    width: 100%; border: 0; border-bottom: 1px solid transparent; background: transparent;
+    font-family: var(--serif); font-weight: 600; font-size: 30px; line-height: 1.25;
+    padding: 4px 0; margin: 0;
+  }
+  .title::placeholder { color: #9AA5B4; }
+  .title:hover, .title:focus { border-bottom-color: var(--rule); outline: none; }
+  .title:focus-visible { border-bottom-color: var(--focus); }
+
+  .options {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px;
+    margin: 12px 0 28px; color: var(--muted); font-size: 14px;
+  }
+  .options label { display: inline-flex; align-items: center; gap: 8px; }
+  .options select {
+    background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 6px 8px; color: var(--ink);
+  }
+  .options .btn { padding: 5px 11px; font-size: 14px; color: var(--muted); }
+  .options .spacer { flex: 1; }
+
+  /* ---------- transcript ---------- */
+  .row {
+    display: grid; grid-template-columns: 70px 1fr; gap: 6px;
+    padding: 10px 12px 10px 0;
+    border-left: 3px solid transparent;
+  }
+  .row + .row { border-top: 1px solid var(--rule); }
+  .row.flagged { background: var(--marker-soft); border-left-color: var(--marker-edge); }
+  .stamp {
+    align-self: start; justify-self: start;
+    background: none; border: 0; cursor: pointer;
+    font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted);
+    padding: 6px 4px 6px 10px; border-radius: 6px; text-align: left;
+  }
+  .stamp:hover { color: var(--ink); background: rgba(26,36,52,.06); }
+  .row.flagged .stamp { color: var(--ink); font-weight: 600; }
+  .text {
+    font-family: var(--serif); font-size: 19px; line-height: 1.7;
+    max-width: 66ch; outline: none; white-space: pre-wrap; overflow-wrap: anywhere;
+    padding: 2px 0;
+  }
+  .text:focus { box-shadow: 0 1px 0 var(--focus); }
+  .live-row { color: var(--muted); font-style: italic; border-top: 1px solid var(--rule); }
+  .live-row .text { color: var(--muted); }
+  .live-row:empty, .live-row[hidden] { display: none; }
+
+  .empty { max-width: 52ch; color: var(--muted); font-family: var(--serif); font-size: 17px; line-height: 1.7; }
+  .empty strong { color: var(--ink); font-weight: 600; }
+  .warn {
+    margin: 0 0 20px; padding: 12px 14px; background: #FDE8EA; border: 1px solid #F3B8BE;
+    border-radius: 8px; color: #7A1521;
+  }
+
+  @media (max-width: 560px) {
+    .row { grid-template-columns: 1fr; }
+    .stamp { padding-left: 10px; }
+    .text { font-size: 18px; padding-left: 10px; }
+    .actions { margin-left: 0; width: 100%; }
+    .title { font-size: 25px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rec-btn.live .dot { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="bar-inner">
+    <button id="recBtn" class="rec-btn" type="button"><span class="dot"></span><span id="recLabel">Start recording</span></button>
+    <span id="clock" class="clock" aria-label="Recording time">0:00:00</span>
+    <span id="status" class="status" role="status" aria-live="polite">Ready</span>
+    <div class="actions">
+      <button id="markBtn" class="btn mark" type="button" title="Highlight the current paragraph (M)">Mark important</button>
+      <button id="copyBtn" class="btn" type="button">Copy</button>
+      <button id="dlBtn" class="btn" type="button">Download .txt</button>
+    </div>
+  </div>
+</div>
+
+<main>
+  <input id="title" class="title" type="text" placeholder="Untitled lecture" aria-label="Lecture title" autocomplete="off">
+
+  <div class="options">
+    <label>Language
+      <select id="lang" aria-label="Spoken language"></select>
+    </label>
+    <label><input id="stamps" type="checkbox" checked> Include timestamps in copy and download</label>
+    <span class="spacer"></span>
+    <button id="clearBtn" class="btn" type="button">Clear transcript</button>
+  </div>
+
+  <div id="unsupported" class="warn" hidden>
+    This browser doesn't support live speech recognition. Open this page in Chrome or Edge on a computer.
+  </div>
+
+  <div id="transcript">
+    <div id="empty" class="empty">
+      <p><strong>Press Start recording and the lecture appears here as it's spoken.</strong></p>
+      <p>Click any timestamp to highlight that paragraph, or press <strong>M</strong> while recording. Click on any text to fix a mistake. Press <strong>Space</strong> to pause and resume.</p>
+      <p>Your transcript is saved in this browser as you go, so a closed tab won't lose it.</p>
+    </div>
+  </div>
+  <div id="liveRow" class="row live-row" hidden>
+    <span></span><div id="liveText" class="text"></div>
+  </div>
+</main>
+
+<script>
+(function () {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    recBtn: $('recBtn'), recLabel: $('recLabel'), clock: $('clock'), status: $('status'),
+    markBtn: $('markBtn'), copyBtn: $('copyBtn'), dlBtn: $('dlBtn'), clearBtn: $('clearBtn'),
+    title: $('title'), lang: $('lang'), stamps: $('stamps'),
+    transcript: $('transcript'), empty: $('empty'), liveRow: $('liveRow'), liveText: $('liveText'),
+    unsupported: $('unsupported')
+  };
+
+  const STORE_KEY = 'lecture-transcriber-v1';
+  const PARA_GAP_MS = 4000;     // pause that starts a new paragraph
+  const PARA_MAX_CHARS = 550;   // split very long paragraphs
+
+  const LANGS = [
+    ['en-US','English (US)'], ['en-GB','English (UK)'], ['en-AU','English (Australia)'], ['en-IN','English (India)'],
+    ['es-ES','Spanish (Spain)'], ['es-MX','Spanish (Mexico)'], ['fr-FR','French'], ['de-DE','German'],
+    ['it-IT','Italian'], ['pt-BR','Portuguese (Brazil)'], ['pt-PT','Portuguese (Portugal)'], ['nl-NL','Dutch'],
+    ['pl-PL','Polish'], ['ru-RU','Russian'], ['tr-TR','Turkish'], ['ar-SA','Arabic'], ['hi-IN','Hindi'],
+    ['id-ID','Indonesian'], ['ja-JP','Japanese'], ['ko-KR','Korean'], ['zh-CN','Chinese (Mandarin)'],
+    ['yue-Hant-HK','Chinese (Cantonese)']
+  ];
+
+  const state = {
+    paras: [],            // {t, text, flagged, row, textEl}
+    wanted: false,        // user wants recording on
+    fatal: false,
+    base: 0,              // seconds recorded before the current run
+    startedAt: 0,
+    lastFinalAt: 0,
+    pendingStart: null,   // elapsed time when the current utterance began
+    flagNext: false,
+    rec: null,
+    wakeLock: null,
+    clearArmed: null
+  };
+
+  /* ---------- helpers ---------- */
+  const pad = (n) => String(n).padStart(2, '0');
+  function fmt(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  }
+  function fmtClock(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    return `${Math.floor(sec / 3600)}:${pad(Math.floor((sec % 3600) / 60))}:${pad(sec % 60)}`;
+  }
+  const elapsed = () => state.base + (state.wanted ? (Date.now() - state.startedAt) / 1000 : 0);
+
+  function setStatus(msg, isErr) {
+    el.status.textContent = msg;
+    el.status.classList.toggle('err', !!isErr);
+  }
+
+  function nearBottom() {
+    return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 220;
+  }
+  function scrollToEnd() {
+    const target = el.liveRow.hidden ? (state.paras.length ? state.paras[state.paras.length - 1].row : null) : el.liveRow;
+    if (target) target.scrollIntoView({ block: 'center', behavior: 'auto' });
+  }
+
+  /* ---------- saving (silently skipped if storage is unavailable) ---------- */
+  let saveTimer = null;
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify({
+          title: el.title.value,
+          lang: el.lang.value,
+          stamps: el.stamps.checked,
+          base: elapsed(),
+          paras: state.paras.map(p => ({ t: p.t, text: p.text, flagged: p.flagged }))
+        }));
+      } catch (_) { /* storage not available here */ }
+    }, 400);
+  }
+
+  /* ---------- transcript rendering ---------- */
+  function makeRow(p) {
+    const row = document.createElement('div');
+    row.className = 'row' + (p.flagged ? ' flagged' : '');
+
+    const stamp = document.createElement('button');
+    stamp.type = 'button';
+    stamp.className = 'stamp';
+    const paintStamp = () => { stamp.textContent = (p.flagged ? '★ ' : '') + fmt(p.t); };
+    paintStamp();
+    stamp.title = 'Highlight or unhighlight this paragraph';
+    stamp.addEventListener('click', () => {
+      p.flagged = !p.flagged;
+      row.classList.toggle('flagged', p.flagged);
+      paintStamp();
+      save();
+    });
+
+    const text = document.createElement('div');
+    text.className = 'text';
+    text.contentEditable = 'true';
+    text.spellcheck = true;
+    text.textContent = p.text;
+    text.addEventListener('input', () => { p.text = text.textContent; save(); });
+
+    row.append(stamp, text);
+    p.row = row; p.textEl = text; p.paintStamp = paintStamp;
+    el.transcript.appendChild(row);
+    return p;
+  }
+
+  function hideEmpty() { if (el.empty) { el.empty.remove(); el.empty = null; } }
+
+  function commit(text) {
+    text = text.trim();
+    if (!text) return;
+    hideEmpty();
+    const stick = nearBottom();
+    const now = Date.now();
+    const last = state.paras[state.paras.length - 1];
+    const gap = now - state.lastFinalAt;
+    const startNew = !last || gap > PARA_GAP_MS || last.text.length > PARA_MAX_CHARS;
+
+    if (startNew) {
+      const p = makeRow({
+        t: state.pendingStart != null ? state.pendingStart : elapsed(),
+        text: text,
+        flagged: state.flagNext
+      });
+      state.paras.push(p);
+      state.flagNext = false;
+    } else {
+      last.text = last.text.replace(/\s+$/, '') + ' ' + text;
+      last.textEl.textContent = last.text;
+    }
+    state.lastFinalAt = now;
+    state.pendingStart = null;
+    save();
+    if (stick) scrollToEnd();
+  }
+
+  function showInterim(text) {
+    const stick = nearBottom();
+    if (text && state.pendingStart == null) state.pendingStart = elapsed();
+    el.liveText.textContent = text;
+    el.liveRow.hidden = !text;
+    if (text) hideEmpty();
+    if (text && stick) scrollToEnd();
+  }
+
+  function restoreRows(list) {
+    state.paras = [];
+    el.transcript.querySelectorAll('.row').forEach(r => r.remove());
+    list.forEach(p => state.paras.push(makeRow({ t: p.t, text: p.text, flagged: !!p.flagged })));
+    if (state.paras.length) hideEmpty();
+  }
+
+  /* ---------- speech recognition ---------- */
+  function createRec() {
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.lang = el.lang.value;
+
+    rec.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) commit(r[0].transcript);
+        else interim += r[0].transcript;
+      }
+      showInterim(interim);
+    };
+
+    rec.onerror = (e) => {
+      switch (e.error) {
+        case 'not-allowed':
+        case 'service-not-allowed':
+          state.fatal = true;
+          setStatus("Microphone is blocked. Allow mic access for this page in your browser's address bar, then try again. If this page is open inside Claude, download the file and open it in Chrome.", true);
+          break;
+        case 'audio-capture':
+          state.fatal = true;
+          setStatus('No microphone found. Plug one in or check your system sound settings.', true);
+          break;
+        case 'language-not-supported':
+          state.fatal = true;
+          setStatus("This browser can't transcribe that language. Pick a different one.", true);
+          break;
+        case 'network':
+          setStatus("Can't reach the speech service. Check your internet connection. Retrying…", true);
+          break;
+        default: break; // no-speech and aborted are normal
+      }
+    };
+
+    rec.onend = () => {
+      showInterim('');
+      if (state.wanted && !state.fatal) {
+        // The browser ends sessions after silence or time limits. Start a fresh one.
+        setTimeout(() => {
+          if (!state.wanted) return;
+          try { state.rec = createRec(); state.rec.start(); } catch (_) { /* already starting */ }
+        }, 300);
+      } else if (state.fatal && state.wanted) {
+        stop();
+      }
+    };
+    return rec;
+  }
+
+  async function lockScreen() {
+    try {
+      if ('wakeLock' in navigator && !state.wakeLock) {
+        state.wakeLock = await navigator.wakeLock.request('screen');
+        state.wakeLock.addEventListener('release', () => { state.wakeLock = null; });
+      }
+    } catch (_) { /* optional */ }
+  }
+  function unlockScreen() {
+    try { if (state.wakeLock) state.wakeLock.release(); } catch (_) {}
+    state.wakeLock = null;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.wanted) lockScreen();
+  });
+
+  function start() {
+    if (!SR || state.wanted) return;
+    state.fatal = false;
+    state.startedAt = Date.now();
+    state.wanted = true;
+    state.lastFinalAt = 0 + state.lastFinalAt;
+    try {
+      state.rec = createRec();
+      state.rec.start();
+    } catch (_) { /* will retry from onend */ }
+    lockScreen();
+    paintUI();
+  }
+
+  function stop() {
+    if (!state.wanted) return;
+    state.base = elapsed();
+    state.wanted = false;
+    try { if (state.rec) state.rec.stop(); } catch (_) {}
+    showInterim('');
+    unlockScreen();
+    paintUI();
+    save();
+  }
+
+  function paintUI() {
+    el.recBtn.classList.toggle('live', state.wanted);
+    el.recLabel.textContent = state.wanted ? 'Pause' : (state.paras.length ? 'Resume recording' : 'Start recording');
+    el.clock.textContent = fmtClock(elapsed());
+    if (state.wanted) { if (!state.fatal) setStatus('Listening…'); }
+    else if (!el.status.classList.contains('err')) setStatus(state.paras.length ? 'Paused' : 'Ready');
+  }
+
+  /* ---------- actions ---------- */
+  function mark() {
+    const stick = nearBottom();
+    if (state.pendingStart != null && (state.lastFinalAt === 0 || Date.now() - state.lastFinalAt > PARA_GAP_MS)) {
+      state.flagNext = true;                     // new paragraph is being spoken
+      setStatus('Next paragraph will be highlighted');
+      return;
+    }
+    const last = state.paras[state.paras.length - 1];
+    if (!last) { setStatus('Nothing to mark yet. Start speaking first.'); return; }
+    last.flagged = true;
+    last.row.classList.add('flagged');
+    last.paintStamp();
+    save();
+    if (stick) scrollToEnd();
+  }
+
+  function buildText() {
+    const withTime = el.stamps.checked;
+    const title = el.title.value.trim() || 'Untitled lecture';
+    const lines = [title, 'Recorded ' + new Date().toLocaleString(), 'Length ' + fmtClock(elapsed()), ''];
+    state.paras.forEach(p => {
+      const star = p.flagged ? '★ ' : '';
+      lines.push(withTime ? `[${fmt(p.t)}] ${star}${p.text}` : `${star}${p.text}`);
+      lines.push('');
+    });
+    return lines.join('\n').trimEnd() + '\n';
+  }
+
+  async function copy() {
+    if (!state.paras.length) { setStatus('Nothing to copy yet.'); return; }
+    const text = buildText();
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {}
+    if (!ok) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+    }
+    setStatus(ok ? 'Copied to clipboard' : "Couldn't copy. Use Download instead.", !ok);
+  }
+
+  function download() {
+    if (!state.paras.length) { setStatus('Nothing to download yet.'); return; }
+    const slug = (el.title.value.trim() || 'lecture').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'lecture';
+    const d = new Date();
+    const name = `${slug}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.txt`;
+    const url = URL.createObjectURL(new Blob([buildText()], { type: 'text/plain;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus('Saved ' + name);
+  }
+
+  function clearAll() {
+    if (!state.paras.length) return;
+    if (!state.clearArmed) {
+      el.clearBtn.textContent = 'Click again to clear everything';
+      el.clearBtn.classList.add('danger-armed');
+      state.clearArmed = setTimeout(disarmClear, 3500);
+      return;
+    }
+    disarmClear();
+    const wasOn = state.wanted;
+    if (wasOn) stop();
+    state.paras = [];
+    el.transcript.querySelectorAll('.row').forEach(r => r.remove());
+    state.base = 0; state.lastFinalAt = 0; state.pendingStart = null; state.flagNext = false;
+    el.title.value = '';
+    if (!document.getElementById('empty')) {
+      const d = document.createElement('div');
+      d.id = 'empty'; d.className = 'empty';
+      d.innerHTML = '<p><strong>Transcript cleared.</strong> Press Start recording to begin a new lecture.</p>';
+      el.transcript.appendChild(d); el.empty = d;
+    }
+    paintUI();
+    setStatus('Cleared');
+    save();
+  }
+  function disarmClear() {
+    clearTimeout(state.clearArmed); state.clearArmed = null;
+    el.clearBtn.textContent = 'Clear transcript';
+    el.clearBtn.classList.remove('danger-armed');
+  }
+
+  /* ---------- setup ---------- */
+  LANGS.forEach(([code, name]) => {
+    const o = document.createElement('option');
+    o.value = code; o.textContent = name;
+    el.lang.appendChild(o);
+  });
+  const nav = navigator.language || 'en-US';
+  el.lang.value = LANGS.some(l => l[0] === nav) ? nav : (LANGS.find(l => l[0].startsWith(nav.split('-')[0])) || ['en-US'])[0];
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+    if (saved && Array.isArray(saved.paras) && saved.paras.length) {
+      el.title.value = saved.title || '';
+      if (saved.lang && LANGS.some(l => l[0] === saved.lang)) el.lang.value = saved.lang;
+      el.stamps.checked = saved.stamps !== false;
+      state.base = saved.base || 0;
+      restoreRows(saved.paras);
+      setStatus('Restored your last session. Press Resume to keep going.');
+    }
+  } catch (_) {}
+
+  if (!SR) {
+    el.unsupported.hidden = false;
+    el.recBtn.disabled = true;
+    el.recBtn.style.opacity = '.5';
+    setStatus('Speech recognition unavailable', true);
+  }
+
+  el.recBtn.addEventListener('click', () => (state.wanted ? stop() : start()));
+  el.markBtn.addEventListener('click', mark);
+  el.copyBtn.addEventListener('click', copy);
+  el.dlBtn.addEventListener('click', download);
+  el.clearBtn.addEventListener('click', clearAll);
+  el.title.addEventListener('input', save);
+  el.stamps.addEventListener('change', save);
+  el.lang.addEventListener('change', () => {
+    save();
+    if (state.wanted) { try { state.rec.stop(); } catch (_) {} }  // onend restarts with the new language
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest && e.target.closest('input, select, textarea, [contenteditable], button')) return;
+    if (e.code === 'Space') { e.preventDefault(); if (SR) (state.wanted ? stop() : start()); }
+    else if (e.key === 'm' || e.key === 'M') { mark(); }
+  });
+
+  window.addEventListener('beforeunload', save);
+  setInterval(() => { if (state.wanted) el.clock.textContent = fmtClock(elapsed()); }, 500);
+  paintUI();
+})();
+</script>
+</body>
+</html>
