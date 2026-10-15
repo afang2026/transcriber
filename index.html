@@ -129,6 +129,23 @@
     border-radius: 8px; color: #7A1521;
   }
 
+  /* ---------- file transcription panel ---------- */
+  .panel { border: 1px solid var(--rule); border-radius: 10px; background: #fff; padding: 16px 18px; margin: 0 0 28px; }
+  .panel strong { font-weight: 600; }
+  .panel p { margin: 6px 0 12px; color: var(--muted); font-size: 14px; }
+  .drop {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 18px; border: 1.5px dashed var(--rule); border-radius: 8px; color: var(--muted);
+  }
+  .drop.over { border-color: var(--focus); background: #F3F6FF; }
+  .panel-row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 12px; color: var(--muted); font-size: 14px; }
+  .panel-row label { display: inline-flex; align-items: center; gap: 8px; }
+  .panel-row select { background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 6px 8px; color: var(--ink); max-width: 100%; }
+  .panel progress { width: 100%; height: 8px; margin-top: 12px; accent-color: var(--ink); }
+  .panel progress[hidden] { display: none; }
+  .panel .panel-msg { margin: 10px 0 0; min-height: 1.4em; }
+  .panel .panel-msg.err { color: var(--rec); }
+
   @media (max-width: 560px) {
     .row { grid-template-columns: 1fr; }
     .stamp { padding-left: 10px; }
@@ -164,18 +181,43 @@
       <select id="lang" aria-label="Spoken language"></select>
     </label>
     <label><input id="stamps" type="checkbox" checked> Include timestamps in copy and download</label>
+    <button id="fileBtn" class="btn" type="button">Transcribe a file…</button>
     <span class="spacer"></span>
     <button id="clearBtn" class="btn" type="button">Clear transcript</button>
   </div>
 
+  <section id="filePanel" class="panel" hidden>
+    <strong>Transcribe an audio file</strong>
+    <p>Drop an MP3, M4A, WAV or video file below. It's transcribed on your computer with Whisper, so the audio is never uploaded. The first run downloads the model once, then your browser keeps it.</p>
+    <div id="fileDrop" class="drop">
+      <button id="filePick" class="btn" type="button">Choose a file…</button>
+      <span>or drop it here</span>
+    </div>
+    <div class="panel-row">
+      <label>Model
+        <select id="fileModel" aria-label="Whisper model">
+          <option value="onnx-community/whisper-small.en" selected>Small, English (most accurate, about 240 MB)</option>
+          <option value="onnx-community/whisper-base.en">Base, English (faster, smaller)</option>
+          <option value="onnx-community/whisper-tiny.en">Tiny, English (fastest, about 40 MB, least accurate)</option>
+          <option value="onnx-community/whisper-small">Small, multilingual (uses the Language setting above)</option>
+        </select>
+      </label>
+      <button id="fileCancel" class="btn" type="button" hidden>Cancel</button>
+    </div>
+    <progress id="fileBar" max="100" value="0" hidden></progress>
+    <p id="fileMsg" class="panel-msg" role="status" aria-live="polite"></p>
+    <input id="fileInput" type="file" accept="audio/*,video/mp4,video/quicktime,video/webm,.m4a,.mp3,.wav,.ogg,.opus,.aac,.flac" hidden>
+  </section>
+
   <div id="unsupported" class="warn" hidden>
-    This browser doesn't support live speech recognition. Open this page in Chrome or Edge on a computer.
+    This browser doesn't support live speech recognition, so the Start recording button is off. You can still use Transcribe a file. For live recording, open this page in Chrome or Edge on a computer.
   </div>
 
   <div id="transcript">
     <div id="empty" class="empty">
       <p><strong>Press Start recording and the lecture appears here as it's spoken.</strong></p>
       <p>Click any timestamp to highlight that paragraph, or press <strong>M</strong> while recording. Click on any text to fix a mistake. Press <strong>Space</strong> to pause and resume.</p>
+      <p>Have a recording instead? Use <strong>Transcribe a file</strong> to turn an MP3 or voice memo into text.</p>
       <p>Your transcript is saved in this browser as you go, so a closed tab won't lose it.</p>
     </div>
   </div>
@@ -416,6 +458,7 @@
 
   function start() {
     if (!SR || state.wanted) return;
+    if (state.importing) { setStatus('A file is being transcribed. Wait for it to finish or cancel it first.', true); return; }
     state.fatal = false;
     state.startedAt = Date.now();
     state.wanted = true;
@@ -580,6 +623,269 @@
     if (e.target.closest && e.target.closest('input, select, textarea, [contenteditable], button')) return;
     if (e.code === 'Space') { e.preventDefault(); if (SR) (state.wanted ? stop() : start()); }
     else if (e.key === 'm' || e.key === 'M') { mark(); }
+  });
+
+  /* ---------- transcribe an audio file (Whisper runs inside your browser) ---------- */
+  const TJS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
+  const WORKER_BODY = `
+let asr = null, loadedKey = '', device = 'wasm';
+const files = {};
+function report(p) {
+  if (p.status === 'progress' && p.total) {
+    files[p.file] = { l: p.loaded, t: p.total };
+    let l = 0, t = 0;
+    for (const k in files) { l += files[k].l; t += files[k].t; }
+    postMessage({ type: 'download', pct: t ? Math.round(100 * l / t) : 0, mb: Math.round(t / 1048576) });
+  }
+}
+async function load(model) {
+  if (asr && loadedKey === model) return;
+  asr = null;
+  let useGpu = false;
+  try { if (self.navigator && navigator.gpu) { useGpu = !!(await navigator.gpu.requestAdapter()); } } catch (e) {}
+  const opts = { dtype: { encoder_model: 'fp32', decoder_model_merged: 'q4' }, progress_callback: report };
+  if (useGpu) {
+    try {
+      asr = await pipeline('automatic-speech-recognition', model, Object.assign({ device: 'webgpu' }, opts));
+      device = 'webgpu';
+    } catch (e) { asr = null; }
+  }
+  if (!asr) {
+    asr = await pipeline('automatic-speech-recognition', model, Object.assign({ device: 'wasm' }, opts));
+    device = 'wasm';
+  }
+  loadedKey = model;
+}
+self.onmessage = async (e) => {
+  const m = e.data;
+  try {
+    if (m.type === 'load') {
+      await load(m.model);
+      postMessage({ type: 'ready', device: device });
+    } else if (m.type === 'run') {
+      const o = { return_timestamps: true };
+      if (!loadedKey.endsWith('.en')) { o.task = 'transcribe'; if (m.language) o.language = m.language; }
+      const out = await asr(m.audio, o);
+      const raw = (out.chunks && out.chunks.length) ? out.chunks : [{ text: out.text, timestamp: [0, m.dur] }];
+      const chunks = raw.map(function (c) {
+        const s = (c.timestamp && c.timestamp[0]) || 0;
+        const en = (c.timestamp && c.timestamp[1] != null) ? c.timestamp[1] : m.dur;
+        return { text: c.text, s: s + m.offset, e: en + m.offset };
+      });
+      postMessage({ type: 'result', idx: m.idx, chunks: chunks });
+    }
+  } catch (err) {
+    postMessage({ type: 'error', message: String((err && err.message) || err) });
+  }
+};
+`;
+  const WORKER_SRC = "import { pipeline } from '" + TJS_URL + "';\n" + WORKER_BODY;
+
+  const fileEl = {
+    btn: $('fileBtn'), panel: $('filePanel'), input: $('fileInput'), pick: $('filePick'), drop: $('fileDrop'),
+    model: $('fileModel'), bar: $('fileBar'), msg: $('fileMsg'), cancel: $('fileCancel')
+  };
+  const fileState = { worker: null, reject: null, cancelled: false };
+  let imp = { cur: null, lastEnd: 0 };
+
+  function setFileMsg(text, isErr) {
+    fileEl.msg.textContent = text;
+    fileEl.msg.classList.toggle('err', !!isErr);
+  }
+  function setBar(pct) {
+    if (pct == null) { fileEl.bar.hidden = true; return; }
+    fileEl.bar.hidden = false;
+    fileEl.bar.value = pct;
+  }
+
+  function resampleTo16k(data, from) {
+    if (from === 16000) return data;
+    const ratio = from / 16000, n = Math.floor(data.length / ratio), out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = i * ratio, i0 = Math.floor(x), i1 = Math.min(i0 + 1, data.length - 1), f = x - i0;
+      out[i] = data[i0] * (1 - f) + data[i1] * f;
+    }
+    return out;
+  }
+
+  async function decodeToMono16k(file) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx({ sampleRate: 16000 });
+    let decoded;
+    try { decoded = await ctx.decodeAudioData(await file.arrayBuffer()); }
+    finally { try { ctx.close(); } catch (_) {} }
+    const n = decoded.length, ch = decoded.numberOfChannels;
+    const mono = new Float32Array(n);
+    for (let c = 0; c < ch; c++) {
+      const d = decoded.getChannelData(c);
+      for (let i = 0; i < n; i++) mono[i] += d[i] / ch;
+    }
+    return resampleTo16k(mono, decoded.sampleRate);
+  }
+
+  // Split into pieces of at most 30 s, cutting at the quietest moment so words aren't chopped in half.
+  function planSegments(audio) {
+    const RATE = 16000, MAX = 30 * RATE, SEARCH = 5 * RATE, FRAME = 1600;
+    const segs = [];
+    let start = 0;
+    while (start < audio.length) {
+      let end = Math.min(start + MAX, audio.length);
+      if (end < audio.length) {
+        let best = end, bestE = Infinity;
+        for (let p = end - SEARCH; p + FRAME <= end; p += FRAME) {
+          let e = 0;
+          for (let i = p; i < p + FRAME; i++) e += audio[i] * audio[i];
+          if (e < bestE) { bestE = e; best = p + (FRAME >> 1); }
+        }
+        end = best;
+      }
+      segs.push([start, end]);
+      start = end;
+    }
+    return segs;
+  }
+
+  function rms(a) {
+    let s = 0;
+    for (let i = 0; i < a.length; i++) s += a[i] * a[i];
+    return Math.sqrt(s / Math.max(1, a.length));
+  }
+
+  function addChunks(chunks) {
+    const stick = nearBottom();
+    hideEmpty();
+    for (const c of chunks) {
+      const text = (c.text || '').trim();
+      if (!text) continue;
+      const cur = imp.cur;
+      if (!cur || c.s - imp.lastEnd > 2.5 || cur.text.length > PARA_MAX_CHARS) {
+        imp.cur = makeRow({ t: c.s, text: text, flagged: false });
+        state.paras.push(imp.cur);
+      } else {
+        cur.text = cur.text + ' ' + text;
+        cur.textEl.textContent = cur.text;
+      }
+      imp.lastEnd = c.e;
+    }
+    save();
+    if (stick) scrollToEnd();
+  }
+
+  function setImporting(on) {
+    state.importing = on;
+    fileEl.cancel.hidden = !on;
+    fileEl.pick.disabled = on;
+    fileEl.model.disabled = on;
+    el.recBtn.disabled = on || !SR;
+  }
+
+  async function transcribeFile(file) {
+    if (state.importing) return;
+    if (state.wanted) { setFileMsg('Pause live recording first, then choose the file again.', true); return; }
+    const wasEmpty = state.paras.length === 0;
+    fileState.cancelled = false;
+    imp = { cur: null, lastEnd: 0 };
+    setImporting(true);
+    setBar(null);
+    let worker = null, workerUrl = null;
+    try {
+      setFileMsg('Reading ' + file.name + '…');
+      let audio;
+      try { audio = await decodeToMono16k(file); }
+      catch (e) { throw new Error("Couldn't read that file. Try an MP3, M4A, WAV, or MP4."); }
+      const dur = audio.length / 16000;
+      if (dur < 1) throw new Error('That file looks empty or too short.');
+
+      workerUrl = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+      worker = fileState.worker = new Worker(workerUrl, { type: 'module' });
+
+      const waitFor = (type) => new Promise((resolve, reject) => {
+        fileState.reject = reject;
+        const cleanup = () => { worker.removeEventListener('message', onMsg); worker.removeEventListener('error', onErr); };
+        const onMsg = (e) => {
+          const m = e.data;
+          if (m.type === 'download') {
+            setBar(m.pct);
+            setFileMsg('Downloading the model… ' + m.pct + '% (about ' + m.mb + ' MB, first time only)');
+          } else if (m.type === 'error') {
+            cleanup(); reject(new Error(m.message));
+          } else if (m.type === type) {
+            cleanup(); resolve(m);
+          }
+        };
+        const onErr = (e) => {
+          cleanup();
+          reject(new Error((e && e.message) || "The transcription engine couldn't start. Check your internet connection."));
+        };
+        worker.addEventListener('message', onMsg);
+        worker.addEventListener('error', onErr);
+      });
+
+      setFileMsg('Loading the Whisper model…');
+      worker.postMessage({ type: 'load', model: fileEl.model.value });
+      let ready;
+      try { ready = await waitFor('ready'); }
+      catch (e) {
+        if (fileState.cancelled) throw e;
+        throw new Error("Couldn't load the Whisper model (" + e.message + "). Check your internet connection, or pick a different model.");
+      }
+
+      if (wasEmpty) {
+        state.base = dur;
+        if (!el.title.value.trim()) el.title.value = file.name.replace(/\.[^.]+$/, '');
+      }
+
+      const language = fileEl.model.value.endsWith('.en') ? null : el.lang.value.split('-')[0];
+      const segs = planSegments(audio);
+      const where = ready.device === 'webgpu' ? 'using your graphics chip' : 'on your processor (slower)';
+      setBar(0);
+      for (let i = 0; i < segs.length; i++) {
+        if (fileState.cancelled) break;
+        const a = segs[i][0], b = segs[i][1];
+        const seg = audio.slice(a, b);
+        if (rms(seg) >= 0.0015) {
+          worker.postMessage({ type: 'run', idx: i, audio: seg, offset: a / 16000, dur: (b - a) / 16000, language: language }, [seg.buffer]);
+          const res = await waitFor('result');
+          addChunks(res.chunks);
+        }
+        setBar(Math.round(100 * (i + 1) / segs.length));
+        setFileMsg('Transcribing ' + where + '… ' + fmt(b / 16000) + ' of ' + fmt(dur));
+      }
+      if (!fileState.cancelled) {
+        setBar(null);
+        setFileMsg(state.paras.length ? 'Done. Click any text to fix mistakes, then copy or download.' : 'No speech was found in that file.');
+      }
+    } catch (err) {
+      setBar(null);
+      if (fileState.cancelled) setFileMsg('Cancelled. Whatever was transcribed so far is kept.');
+      else setFileMsg(err.message || String(err), true);
+    } finally {
+      try { if (worker) worker.terminate(); } catch (_) {}
+      if (workerUrl) URL.revokeObjectURL(workerUrl);
+      fileState.worker = null; fileState.reject = null;
+      setImporting(false);
+      paintUI();
+      save();
+    }
+  }
+
+  fileEl.btn.addEventListener('click', () => { fileEl.panel.hidden = !fileEl.panel.hidden; });
+  fileEl.pick.addEventListener('click', () => fileEl.input.click());
+  fileEl.input.addEventListener('change', () => {
+    const f = fileEl.input.files && fileEl.input.files[0];
+    fileEl.input.value = '';
+    if (f) transcribeFile(f);
+  });
+  fileEl.cancel.addEventListener('click', () => {
+    fileState.cancelled = true;
+    try { if (fileState.worker) fileState.worker.terminate(); } catch (_) {}
+    if (fileState.reject) fileState.reject(new Error('cancelled'));
+  });
+  ['dragenter', 'dragover'].forEach(t => fileEl.drop.addEventListener(t, (e) => { e.preventDefault(); fileEl.drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => fileEl.drop.addEventListener(t, (e) => { e.preventDefault(); fileEl.drop.classList.remove('over'); }));
+  fileEl.drop.addEventListener('drop', (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) transcribeFile(f);
   });
 
   window.addEventListener('beforeunload', save);
